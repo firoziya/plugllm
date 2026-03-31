@@ -8,7 +8,8 @@
 
 **PlugLLM** is a powerful, unified Python package that provides a consistent interface for 13+ Large Language Model (LLM) providers. Stop dealing with different SDKs and API formats - use one simple API for all your LLM needs.
 
-<div style="text-align: center; margin: 20px 0; background-color: #000; padding: 20px; border-radius: 5px;">
+
+<div style="align-items: center; margin: 20px 0; background-color: #000; padding: 20px; border-radius: 5px;">
 
 ![Typing SVG](https://readme-typing-svg.demolab.com?font=Source+Code+Pro&size=38&pause=800&color=39FF14&background=000000&center=true&vCenter=true&width=750&lines=%24+pip+install+plugllm;Installing...;Done+%E2%9C%85)
 
