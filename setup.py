@@ -7,7 +7,7 @@ with open("README.md", "r", encoding="utf-8") as f:
 
 setup(
     name='plugllm',
-    version='2.0.1',
+    version='2.0.2',
     author='Yash Kumar Firoziya',
     author_email='ykfiroziya@gmail.com',
     description='Unified LLM API interface for OpenAI, Gemini, Mistral, Groq, Claude, and 10+ providers',

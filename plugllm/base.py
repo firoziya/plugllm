@@ -423,51 +423,135 @@ class BaseLLM(ABC):
     # CONVENIENCE METHODS FOR PROMPTS
     # ============================================
     
+    def _get_context_history(self, conversation_id: Optional[str] = None, max_previous: int = 5) -> List[Message]:
+        """
+        Get conversation history for a named conversation
+        
+        Args:
+            conversation_id: Name of the conversation (creates new if doesn't exist)
+            max_previous: Maximum number of previous exchanges to include
+        
+        Returns:
+            List of messages from conversation history (last max_previous user+assistant pairs)
+        """
+        # Use default name if none provided
+        name = conversation_id or "default"
+        
+        # Get or create context
+        if name not in self._contexts:
+            self._contexts[name] = ConversationContext(max_history=self.max_history)
+        
+        context = self._contexts[name]
+        
+        # Get conversation messages
+        conversation = context.get_conversation()
+        
+        # Extract only the last max_previous exchanges (user + assistant pairs)
+        # Each exchange consists of user message followed by assistant message
+        if len(conversation) > 0:
+            # Filter to keep only user and assistant messages (exclude system for context limit)
+            user_assistant_messages = [msg for msg in conversation if msg.role in ["user", "assistant"]]
+            
+            # Keep only last max_previous * 2 messages (each exchange = 2 messages)
+            max_messages = max_previous * 2
+            if len(user_assistant_messages) > max_messages:
+                user_assistant_messages = user_assistant_messages[-max_messages:]
+            
+            # Reconstruct full conversation with system message if present
+            result = []
+            if context.system_message:
+                result.append(context.system_message)
+            result.extend(user_assistant_messages)
+            return result
+        
+        return conversation
+    
     def ask(
         self,
         user_prompt: str,
         system_prompt: Optional[str] = None,
         assistant_context: Optional[str] = None,
+        conversation_id: Optional[str] = None,
         **kwargs
     ) -> ChatResponse:
         """
-        Simple ask method with optional system and assistant context
+        Simple ask method with optional system and assistant context and conversation memory
         
         Args:
             user_prompt: User's question/prompt
             system_prompt: Optional system instruction
             assistant_context: Optional assistant message for context
+            conversation_id: Optional name for the conversation (creates separate history)
+                                If not provided, uses "default" conversation
             **kwargs: Additional generation parameters
         
         Returns:
             ChatResponse
         """
+        # Get conversation history if conversation_id is provided
         messages = []
         
+        # Add system prompt if provided (overrides conversation system message)
         if system_prompt:
             messages.append(Message.system(system_prompt))
         
+        # Add conversation history (only if conversation_id is provided or exists)
+        # This allows for context-aware conversations
+        if conversation_id is not None or conversation_id in self._contexts:
+            # Get history with last 5 user/assistant exchanges
+            history = self._get_context_history(conversation_id, max_previous=5)
+            # Add history but avoid adding duplicate system message
+            for msg in history:
+                if msg.role == "system" and system_prompt:
+                    continue  # Skip if we already added a system prompt
+                messages.append(msg)
+        
+        # Add assistant context if provided
         if assistant_context:
             messages.append(Message.assistant(assistant_context))
         
+        # Add user prompt
         messages.append(Message.user(user_prompt))
         
-        return self.generate(messages, **kwargs)
+        # Generate response
+        response = self.generate(messages, **kwargs)
+        
+        # Store in conversation history if conversation_id is provided
+        if conversation_id is not None:
+            # Get or create context
+            name = conversation_id
+            if name not in self._contexts:
+                self._contexts[name] = ConversationContext(max_history=self.max_history)
+            
+            context = self._contexts[name]
+            
+            # Set system prompt if provided and not already set
+            if system_prompt and not context.system_message:
+                context.set_system_message(system_prompt)
+            
+            # Add user message and assistant response to history
+            context.add_user_message(user_prompt)
+            context.add_assistant_message(response.content)
+        
+        return response
     
     async def aask(
         self,
         user_prompt: str,
         system_prompt: Optional[str] = None,
         assistant_context: Optional[str] = None,
+        conversation_id: Optional[str] = None,
         **kwargs
     ) -> ChatResponse:
         """
-        Async ask method with optional system and assistant context
+        Async ask method with optional system and assistant context and conversation memory
         
         Args:
             user_prompt: User's question/prompt
             system_prompt: Optional system instruction
             assistant_context: Optional assistant message for context
+            conversation_id: Optional name for the conversation (creates separate history)
+                                If not provided, uses "default" conversation
             **kwargs: Additional generation parameters
         
         Returns:
@@ -478,27 +562,53 @@ class BaseLLM(ABC):
         if system_prompt:
             messages.append(Message.system(system_prompt))
         
+        # Add conversation history
+        if conversation_id is not None or conversation_id in self._contexts:
+            history = self._get_context_history(conversation_id, max_previous=5)
+            for msg in history:
+                if msg.role == "system" and system_prompt:
+                    continue
+                messages.append(msg)
+        
         if assistant_context:
             messages.append(Message.assistant(assistant_context))
         
         messages.append(Message.user(user_prompt))
         
-        return await self.agenerate(messages, **kwargs)
+        response = await self.agenerate(messages, **kwargs)
+        
+        if conversation_id is not None:
+            name = conversation_id
+            if name not in self._contexts:
+                self._contexts[name] = ConversationContext(max_history=self.max_history)
+            
+            context = self._contexts[name]
+            
+            if system_prompt and not context.system_message:
+                context.set_system_message(system_prompt)
+            
+            context.add_user_message(user_prompt)
+            context.add_assistant_message(response.content)
+        
+        return response
     
     def ask_stream(
         self,
         user_prompt: str,
         system_prompt: Optional[str] = None,
         assistant_context: Optional[str] = None,
+        conversation_id: Optional[str] = None,
         **kwargs
     ):
         """
-        Streaming ask method with optional system and assistant context
+        Streaming ask method with optional system and assistant context and conversation memory
         
         Args:
             user_prompt: User's question/prompt
             system_prompt: Optional system instruction
             assistant_context: Optional assistant message for context
+            conversation_id: Optional name for the conversation (creates separate history)
+                                If not provided, uses "default" conversation
             **kwargs: Additional generation parameters
         
         Yields:
@@ -509,12 +619,37 @@ class BaseLLM(ABC):
         if system_prompt:
             messages.append(Message.system(system_prompt))
         
+        # Add conversation history
+        if conversation_id is not None or conversation_id in self._contexts:
+            history = self._get_context_history(conversation_id, max_previous=5)
+            for msg in history:
+                if msg.role == "system" and system_prompt:
+                    continue
+                messages.append(msg)
+        
         if assistant_context:
             messages.append(Message.assistant(assistant_context))
         
         messages.append(Message.user(user_prompt))
         
-        yield from self.stream(messages, **kwargs)
+        full_response = []
+        for chunk in self.stream(messages, **kwargs):
+            full_response.append(chunk)
+            yield chunk
+        
+        # Store in conversation history
+        if conversation_id is not None:
+            name = conversation_id
+            if name not in self._contexts:
+                self._contexts[name] = ConversationContext(max_history=self.max_history)
+            
+            context = self._contexts[name]
+            
+            if system_prompt and not context.system_message:
+                context.set_system_message(system_prompt)
+            
+            context.add_user_message(user_prompt)
+            context.add_assistant_message("".join(full_response))
     
     # ============================================
     # CHAT METHODS WITH CONTEXT MEMORY
@@ -525,6 +660,7 @@ class BaseLLM(ABC):
         message: str,
         session_id: str = "default",
         system_message: Optional[str] = None,
+        conversation_id: Optional[str] = None,
         **kwargs
     ) -> ChatResponse:
         """
@@ -532,18 +668,23 @@ class BaseLLM(ABC):
         
         Args:
             message: User message
-            session_id: Session ID for maintaining separate conversations
+            session_id: Session ID for maintaining separate conversations (deprecated, use conversation_id)
             system_message: Optional system message to set for this session
+            conversation_id: Optional name for the conversation (creates separate history)
+                                If not provided, uses session_id for backward compatibility
             **kwargs: Additional generation parameters
         
         Returns:
             ChatResponse with assistant's reply
         """
-        # Get or create context for this session
-        if session_id not in self._contexts:
-            self._contexts[session_id] = ConversationContext(max_history=self.max_history)
+        # For backward compatibility, use session_id if conversation_id not provided
+        conv_name = conversation_id or session_id
         
-        context = self._contexts[session_id]
+        # Get or create context for this conversation
+        if conv_name not in self._contexts:
+            self._contexts[conv_name] = ConversationContext(max_history=self.max_history)
+        
+        context = self._contexts[conv_name]
         
         # Set system message if provided
         if system_message:
@@ -568,13 +709,16 @@ class BaseLLM(ABC):
         message: str,
         session_id: str = "default",
         system_message: Optional[str] = None,
+        conversation_id: Optional[str] = None,
         **kwargs
     ) -> ChatResponse:
         """Async chat with context memory"""
-        if session_id not in self._contexts:
-            self._contexts[session_id] = ConversationContext(max_history=self.max_history)
+        conv_name = conversation_id or session_id
         
-        context = self._contexts[session_id]
+        if conv_name not in self._contexts:
+            self._contexts[conv_name] = ConversationContext(max_history=self.max_history)
+        
+        context = self._contexts[conv_name]
         
         if system_message:
             context.set_system_message(system_message)
@@ -591,13 +735,16 @@ class BaseLLM(ABC):
         message: str,
         session_id: str = "default",
         system_message: Optional[str] = None,
+        conversation_id: Optional[str] = None,
         **kwargs
     ):
         """Stream chat with context memory"""
-        if session_id not in self._contexts:
-            self._contexts[session_id] = ConversationContext(max_history=self.max_history)
+        conv_name = conversation_id or session_id
         
-        context = self._contexts[session_id]
+        if conv_name not in self._contexts:
+            self._contexts[conv_name] = ConversationContext(max_history=self.max_history)
+        
+        context = self._contexts[conv_name]
         
         if system_message:
             context.set_system_message(system_message)
@@ -617,13 +764,16 @@ class BaseLLM(ABC):
         message: str,
         session_id: str = "default",
         system_message: Optional[str] = None,
+        conversation_id: Optional[str] = None,
         **kwargs
     ) -> AsyncGenerator[str, None]:
         """Async stream chat with context memory"""
-        if session_id not in self._contexts:
-            self._contexts[session_id] = ConversationContext(max_history=self.max_history)
+        conv_name = conversation_id or session_id
         
-        context = self._contexts[session_id]
+        if conv_name not in self._contexts:
+            self._contexts[conv_name] = ConversationContext(max_history=self.max_history)
+        
+        context = self._contexts[conv_name]
         
         if system_message:
             context.set_system_message(system_message)
@@ -642,32 +792,64 @@ class BaseLLM(ABC):
     # HELPER METHODS
     # ============================================
     
-    def get_conversation_history(self, session_id: str = "default") -> List[Dict[str, str]]:
-        """Get conversation history for a session"""
-        if session_id not in self._contexts:
+    def get_conversation_history(self, session_id: str = "default", conversation_id: Optional[str] = None) -> List[Dict[str, str]]:
+        """
+        Get conversation history for a conversation
+        
+        Args:
+            session_id: Session ID for backward compatibility
+            conversation_id: Name of the conversation (preferred)
+        
+        Returns:
+            List of messages in the conversation
+        """
+        conv_name = conversation_id or session_id
+        if conv_name not in self._contexts:
             return []
         
-        context = self._contexts[session_id]
+        context = self._contexts[conv_name]
         return [msg.to_dict() for msg in context.get_conversation()]
     
-    def clear_conversation(self, session_id: str = "default"):
-        """Clear conversation history for a session"""
-        if session_id in self._contexts:
-            self._contexts[session_id].clear()
-    
-    def reset_conversation(self, session_id: str = "default"):
-        """Reset conversation completely for a session"""
-        if session_id in self._contexts:
-            self._contexts[session_id].reset()
-        elif session_id in self._contexts:
-            del self._contexts[session_id]
-    
-    def set_system_message(self, system_message: str, session_id: str = "default"):
-        """Set system message for a session"""
-        if session_id not in self._contexts:
-            self._contexts[session_id] = ConversationContext(max_history=self.max_history)
+    def clear_conversation(self, session_id: str = "default", conversation_id: Optional[str] = None):
+        """
+        Clear conversation history for a conversation
         
-        self._contexts[session_id].set_system_message(system_message)
+        Args:
+            session_id: Session ID for backward compatibility
+            conversation_id: Name of the conversation (preferred)
+        """
+        conv_name = conversation_id or session_id
+        if conv_name in self._contexts:
+            self._contexts[conv_name].clear()
+    
+    def reset_conversation(self, session_id: str = "default", conversation_id: Optional[str] = None):
+        """
+        Reset conversation completely for a conversation
+        
+        Args:
+            session_id: Session ID for backward compatibility
+            conversation_id: Name of the conversation (preferred)
+        """
+        conv_name = conversation_id or session_id
+        if conv_name in self._contexts:
+            self._contexts[conv_name].reset()
+        elif conv_name in self._contexts:
+            del self._contexts[conv_name]
+    
+    def set_system_message(self, system_message: str, session_id: str = "default", conversation_id: Optional[str] = None):
+        """
+        Set system message for a conversation
+        
+        Args:
+            system_message: System message to set
+            session_id: Session ID for backward compatibility
+            conversation_id: Name of the conversation (preferred)
+        """
+        conv_name = conversation_id or session_id
+        if conv_name not in self._contexts:
+            self._contexts[conv_name] = ConversationContext(max_history=self.max_history)
+        
+        self._contexts[conv_name].set_system_message(system_message)
     
     def _format_messages(
         self,
